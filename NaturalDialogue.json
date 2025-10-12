@@ -1,0 +1,18 @@
+{
+  "Author": "Your Name",
+  "Name": "NaturalDialogue",
+  "Punchline": "Brings dialogue to life with Microsoft Natural Voices.",
+  "Description": "Uses installed Windows TTS voices (including British English Natural Voices) to voice all NPC dialogue text in the game.",
+  "InternalName": "NaturalDialogue",
+  "AssemblyVersion": "1.0.0.0",
+  "RepoUrl": "https://github.com/your-repo/NaturalDialogue",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 9,
+  "LoadPriority": 0,
+  "Tags": [
+    "tts",
+    "voice",
+    "dialogue",
+    "accessibility"
+  ]
+}
