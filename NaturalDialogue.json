@@ -1,11 +1,11 @@
 {
-  "Author": "Your Name",
+  "Author": "Casey Shingledecker",
   "Name": "NaturalDialogue",
   "Punchline": "Brings dialogue to life with Microsoft Natural Voices.",
   "Description": "Uses installed Windows TTS voices (including British English Natural Voices) to voice all NPC dialogue text in the game.",
   "InternalName": "NaturalDialogue",
   "AssemblyVersion": "1.0.0.0",
-  "RepoUrl": "https://github.com/your-repo/NaturalDialogue",
+  "RepoUrl": "https://github.com/Beebopcat/Natural-Dialogue/blob/main/Plugin.cs",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 9,
   "LoadPriority": 0,
