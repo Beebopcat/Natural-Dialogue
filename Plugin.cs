@@ -3,6 +3,7 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using System;
 using System.Speech.Synthesis;
 using System.Collections.Generic;
 using System.Linq;
@@ -23,6 +24,9 @@ namespace NaturalDialogue
         private readonly Configuration _configuration;
         private readonly WindowSystem _windowSystem = new("NaturalDialogue");
         private readonly ConfigWindow _configWindow;
+
+        // Maximum number of characters passed to the synthesizer for a single line.
+        private const int MaxSpokenCharacters = 1000;
 
         // Text-to-Speech Engine
         private readonly SpeechSynthesizer _speechSynthesizer;
@@ -58,6 +62,7 @@ namespace NaturalDialogue
             // Load Configuration
             _configuration = _pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
             _configuration.Initialize(_pluginInterface);
+            _configuration.Sanitize();
 
             // Initialize TTS Engine
             _speechSynthesizer = new SpeechSynthesizer();
@@ -67,7 +72,7 @@ namespace NaturalDialogue
             _configWindow = new ConfigWindow(this, _configuration, _availableMaleVoices, _availableFemaleVoices);
             _windowSystem.AddWindow(_configWindow);
             _pluginInterface.UiBuilder.Draw += _windowSystem.Draw;
-            _pluginInterface.UiBuilder.OpenConfigUi += () => _configWindow.IsOpen = true;
+            _pluginInterface.UiBuilder.OpenConfigUi += OpenConfigUi;
 
             // Subscribe to the chat event
             _chatGui.OnChatMessage += OnChatMessage;
@@ -93,11 +98,11 @@ namespace NaturalDialogue
                 }
             }
 
-            // Set default voice if none configured
-            if (string.IsNullOrEmpty(_configuration.SelectedMaleVoice) && _availableMaleVoices.Any())
-                _configuration.SelectedMaleVoice = _availableMaleVoices[0];
-            if (string.IsNullOrEmpty(_configuration.SelectedFemaleVoice) && _availableFemaleVoices.Any())
-                _configuration.SelectedFemaleVoice = _availableFemaleVoices[0];
+            // Discard persisted voice names that are not actually installed before falling back to a default.
+            if (!_availableMaleVoices.Contains(_configuration.SelectedMaleVoice))
+                _configuration.SelectedMaleVoice = _availableMaleVoices.FirstOrDefault() ?? "";
+            if (!_availableFemaleVoices.Contains(_configuration.SelectedFemaleVoice))
+                _configuration.SelectedFemaleVoice = _availableFemaleVoices.FirstOrDefault() ?? "";
         }
 
         private void OnChatMessage(XivChatType type, uint senderId, ref SeString sender, ref SeString message, ref bool isHandled)
@@ -113,6 +118,9 @@ namespace NaturalDialogue
             string dialogueText = message.TextValue.Trim();
 
             if (string.IsNullOrWhiteSpace(speakerName) || string.IsNullOrWhiteSpace(dialogueText)) return;
+
+            if (dialogueText.Length > MaxSpokenCharacters)
+                dialogueText = dialogueText.Substring(0, MaxSpokenCharacters);
 
             // Stop any currently speaking line to prevent overlap
             _speechSynthesizer.SpeakAsyncCancelAll();
@@ -140,8 +148,8 @@ namespace NaturalDialogue
                 try
                 {
                     _speechSynthesizer.SelectVoice(voiceToUse);
-                    _speechSynthesizer.Volume = _configuration.Volume;
-                    _speechSynthesizer.Rate = _configuration.Rate;
+                    _speechSynthesizer.Volume = Math.Clamp(_configuration.Volume, Configuration.MinVolume, Configuration.MaxVolume);
+                    _speechSynthesizer.Rate = Math.Clamp(_configuration.Rate, Configuration.MinRate, Configuration.MaxRate);
                     _speechSynthesizer.SpeakAsync(dialogueText);
                 }
                 catch
@@ -151,11 +159,13 @@ namespace NaturalDialogue
             }
         }
 
+        private void OpenConfigUi() => _configWindow.IsOpen = true;
+
         public void Dispose()
         {
             _chatGui.OnChatMessage -= OnChatMessage;
             _pluginInterface.UiBuilder.Draw -= _windowSystem.Draw;
-            _pluginInterface.UiBuilder.OpenConfigUi -= () => _configWindow.IsOpen = true;
+            _pluginInterface.UiBuilder.OpenConfigUi -= OpenConfigUi;
             _speechSynthesizer.Dispose();
         }
     }
@@ -165,6 +175,11 @@ namespace NaturalDialogue
 
     public class Configuration : IPluginConfiguration
     {
+        public const int MinVolume = 0;
+        public const int MaxVolume = 100;
+        public const int MinRate = -10;
+        public const int MaxRate = 10;
+
         public int Version { get; set; } = 0;
         public bool IsEnabled { get; set; } = true;
         public string SelectedMaleVoice { get; set; } = "";
@@ -176,6 +191,17 @@ namespace NaturalDialogue
         public void Initialize(DalamudPluginInterface pluginInterface)
         {
             _pluginInterface = pluginInterface;
+        }
+
+        /// <summary>
+        /// Brings values loaded from the on-disk config file back into their supported ranges.
+        /// </summary>
+        public void Sanitize()
+        {
+            Volume = Math.Clamp(Volume, MinVolume, MaxVolume);
+            Rate = Math.Clamp(Rate, MinRate, MaxRate);
+            SelectedMaleVoice ??= "";
+            SelectedFemaleVoice ??= "";
         }
 
         public void Save()
@@ -235,11 +261,11 @@ namespace NaturalDialogue
             ImGui.Text("Audio Settings");
             ImGui.Separator();
 
-            if (ImGui.SliderInt("Volume", ref _configuration.Volume, 0, 100))
+            if (ImGui.SliderInt("Volume", ref _configuration.Volume, Configuration.MinVolume, Configuration.MaxVolume))
             {
                 _configuration.Save();
             }
-            if (ImGui.SliderInt("Rate", ref _configuration.Rate, -10, 10))
+            if (ImGui.SliderInt("Rate", ref _configuration.Rate, Configuration.MinRate, Configuration.MaxRate))
             {
                 _configuration.Save();
             }
