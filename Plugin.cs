@@ -3,6 +3,7 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using System;
 using System.Speech.Synthesis;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,7 +19,7 @@ namespace NaturalDialogue
 
         private readonly DalamudPluginInterface _pluginInterface;
         private readonly ChatGui _chatGui;
-        
+
         // Configuration and Window System
         private readonly Configuration _configuration;
         private readonly WindowSystem _windowSystem = new("NaturalDialogue");
@@ -26,12 +27,10 @@ namespace NaturalDialogue
 
         // Text-to-Speech Engine
         private readonly SpeechSynthesizer _speechSynthesizer;
-        private List<InstalledVoice> _installedVoices;
-        private List<string> _availableMaleVoices = new();
-        private List<string> _availableFemaleVoices = new();
-        
+        private readonly VoiceCatalog _voiceCatalog;
+
         // Character to Gender Mapping
-        private readonly Dictionary<string, VoiceGender> _characterGenderMap = new()
+        private static readonly Dictionary<string, VoiceGender> CharacterGenderMap = new()
         {
             // A small, expandable list of known characters
             { "Y'shtola", VoiceGender.Female },
@@ -61,43 +60,30 @@ namespace NaturalDialogue
 
             // Initialize TTS Engine
             _speechSynthesizer = new SpeechSynthesizer();
-            InitializeVoices();
+            _voiceCatalog = VoiceCatalog.FromInstalledVoices(_speechSynthesizer, new CultureInfo("en-GB"));
+            ApplyDefaultVoices();
 
             // Set up UI
-            _configWindow = new ConfigWindow(this, _configuration, _availableMaleVoices, _availableFemaleVoices);
+            _configWindow = new ConfigWindow(_configuration, _voiceCatalog);
             _windowSystem.AddWindow(_configWindow);
             _pluginInterface.UiBuilder.Draw += _windowSystem.Draw;
-            _pluginInterface.UiBuilder.OpenConfigUi += () => _configWindow.IsOpen = true;
+            _pluginInterface.UiBuilder.OpenConfigUi += OpenConfigWindow;
 
             // Subscribe to the chat event
             _chatGui.OnChatMessage += OnChatMessage;
         }
 
-        private void InitializeVoices()
+        private void OpenConfigWindow() => _configWindow.IsOpen = true;
+
+        private void ApplyDefaultVoices()
         {
-            _installedVoices = _speechSynthesizer.GetInstalledVoices().ToList();
-            var britishCulture = new CultureInfo("en-GB");
-
-            foreach (var voice in _installedVoices)
+            foreach (var gender in VoiceCatalog.SupportedGenders)
             {
-                if (voice.VoiceInfo.Culture.Equals(britishCulture))
-                {
-                    if (voice.VoiceInfo.Gender == VoiceGender.Male)
-                    {
-                        _availableMaleVoices.Add(voice.VoiceInfo.Name);
-                    }
-                    else if (voice.VoiceInfo.Gender == VoiceGender.Female)
-                    {
-                        _availableFemaleVoices.Add(voice.VoiceInfo.Name);
-                    }
-                }
-            }
+                if (!string.IsNullOrEmpty(_configuration.GetSelectedVoice(gender))) continue;
 
-            // Set default voice if none configured
-            if (string.IsNullOrEmpty(_configuration.SelectedMaleVoice) && _availableMaleVoices.Any())
-                _configuration.SelectedMaleVoice = _availableMaleVoices[0];
-            if (string.IsNullOrEmpty(_configuration.SelectedFemaleVoice) && _availableFemaleVoices.Any())
-                _configuration.SelectedFemaleVoice = _availableFemaleVoices[0];
+                var voices = _voiceCatalog.GetVoices(gender);
+                if (voices.Count > 0) _configuration.SetSelectedVoice(gender, voices[0]);
+            }
         }
 
         private void OnChatMessage(XivChatType type, uint senderId, ref SeString sender, ref SeString message, ref bool isHandled)
@@ -117,37 +103,23 @@ namespace NaturalDialogue
             // Stop any currently speaking line to prevent overlap
             _speechSynthesizer.SpeakAsyncCancelAll();
 
-            // Determine the voice to use
-            VoiceGender gender = VoiceGender.Neutral;
-            if (_characterGenderMap.TryGetValue(speakerName, out var knownGender))
-            {
-                gender = knownGender;
-            }
+            var gender = CharacterGenderMap.TryGetValue(speakerName, out var knownGender)
+                ? knownGender
+                : VoiceGender.Neutral;
 
-            string voiceToUse = null;
-            if (gender == VoiceGender.Male && !string.IsNullOrEmpty(_configuration.SelectedMaleVoice))
-            {
-                voiceToUse = _configuration.SelectedMaleVoice;
-            }
-            else if (gender == VoiceGender.Female && !string.IsNullOrEmpty(_configuration.SelectedFemaleVoice))
-            {
-                voiceToUse = _configuration.SelectedFemaleVoice;
-            }
+            var voiceToUse = _configuration.GetSelectedVoice(gender);
+            if (string.IsNullOrEmpty(voiceToUse)) return;
 
-            // If a valid voice is found, speak the text
-            if (voiceToUse != null)
+            try
             {
-                try
-                {
-                    _speechSynthesizer.SelectVoice(voiceToUse);
-                    _speechSynthesizer.Volume = _configuration.Volume;
-                    _speechSynthesizer.Rate = _configuration.Rate;
-                    _speechSynthesizer.SpeakAsync(dialogueText);
-                }
-                catch
-                {
-                    // Handle case where voice is not found or fails
-                }
+                _speechSynthesizer.SelectVoice(voiceToUse);
+                _speechSynthesizer.Volume = _configuration.Volume;
+                _speechSynthesizer.Rate = _configuration.Rate;
+                _speechSynthesizer.SpeakAsync(dialogueText);
+            }
+            catch
+            {
+                // Handle case where voice is not found or fails
             }
         }
 
@@ -155,13 +127,50 @@ namespace NaturalDialogue
         {
             _chatGui.OnChatMessage -= OnChatMessage;
             _pluginInterface.UiBuilder.Draw -= _windowSystem.Draw;
-            _pluginInterface.UiBuilder.OpenConfigUi -= () => _configWindow.IsOpen = true;
+            _pluginInterface.UiBuilder.OpenConfigUi -= OpenConfigWindow;
+            _windowSystem.RemoveAllWindows();
+            _configWindow.Dispose();
             _speechSynthesizer.Dispose();
         }
     }
 
     // You would create separate files for Configuration and the UI Window for better organization.
     // For this example, I will keep them here for simplicity.
+
+    /// <summary>Installed synthesizer voices grouped by gender for a single culture.</summary>
+    public class VoiceCatalog
+    {
+        public static readonly IReadOnlyList<VoiceGender> SupportedGenders =
+            new[] { VoiceGender.Male, VoiceGender.Female };
+
+        private static readonly IReadOnlyList<string> NoVoices = Array.Empty<string>();
+
+        private readonly Dictionary<VoiceGender, List<string>> _voicesByGender;
+
+        private VoiceCatalog(Dictionary<VoiceGender, List<string>> voicesByGender)
+        {
+            _voicesByGender = voicesByGender;
+        }
+
+        public static VoiceCatalog FromInstalledVoices(SpeechSynthesizer synthesizer, CultureInfo culture)
+        {
+            var voicesByGender = SupportedGenders.ToDictionary(gender => gender, _ => new List<string>());
+
+            foreach (var voice in synthesizer.GetInstalledVoices())
+            {
+                var info = voice.VoiceInfo;
+                if (!info.Culture.Equals(culture)) continue;
+                if (voicesByGender.TryGetValue(info.Gender, out var voices)) voices.Add(info.Name);
+            }
+
+            return new VoiceCatalog(voicesByGender);
+        }
+
+        public IReadOnlyList<string> GetVoices(VoiceGender gender) =>
+            _voicesByGender.TryGetValue(gender, out var voices) ? voices : NoVoices;
+
+        public bool IsEmpty => SupportedGenders.All(gender => GetVoices(gender).Count == 0);
+    }
 
     public class Configuration : IPluginConfiguration
     {
@@ -178,6 +187,26 @@ namespace NaturalDialogue
             _pluginInterface = pluginInterface;
         }
 
+        public string GetSelectedVoice(VoiceGender gender) => gender switch
+        {
+            VoiceGender.Male => SelectedMaleVoice,
+            VoiceGender.Female => SelectedFemaleVoice,
+            _ => ""
+        };
+
+        public void SetSelectedVoice(VoiceGender gender, string voiceName)
+        {
+            switch (gender)
+            {
+                case VoiceGender.Male:
+                    SelectedMaleVoice = voiceName;
+                    break;
+                case VoiceGender.Female:
+                    SelectedFemaleVoice = voiceName;
+                    break;
+            }
+        }
+
         public void Save()
         {
             _pluginInterface!.SavePluginConfig(this);
@@ -187,15 +216,13 @@ namespace NaturalDialogue
     public class ConfigWindow : Window, IDisposable
     {
         private readonly Configuration _configuration;
-        private readonly List<string> _maleVoices;
-        private readonly List<string> _femaleVoices;
+        private readonly VoiceCatalog _voiceCatalog;
 
-        public ConfigWindow(Plugin plugin, Configuration configuration, List<string> maleVoices, List<string> femaleVoices) : base(
+        public ConfigWindow(Configuration configuration, VoiceCatalog voiceCatalog) : base(
             "NaturalDialogue Configuration", ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoResize | ImGuiWindowFlags.AlwaysAutoResize)
         {
             _configuration = configuration;
-            _maleVoices = maleVoices;
-            _femaleVoices = femaleVoices;
+            _voiceCatalog = voiceCatalog;
         }
 
         public override void Draw()
@@ -205,41 +232,47 @@ namespace NaturalDialogue
                 _configuration.Save();
             }
 
-            ImGui.Spacing();
-            ImGui.Text("Voice Settings");
-            ImGui.Separator();
+            DrawSection("Voice Settings");
 
-            // Male Voice Selector
-            int selectedMaleIndex = _maleVoices.IndexOf(_configuration.SelectedMaleVoice);
-            if (ImGui.Combo("Male Voice (en-GB)", ref selectedMaleIndex, _maleVoices.ToArray(), _maleVoices.Count))
+            foreach (var gender in VoiceCatalog.SupportedGenders)
             {
-                _configuration.SelectedMaleVoice = _maleVoices[selectedMaleIndex];
-                _configuration.Save();
+                DrawVoiceSelector(gender);
             }
 
-            // Female Voice Selector
-            int selectedFemaleIndex = _femaleVoices.IndexOf(_configuration.SelectedFemaleVoice);
-            if (ImGui.Combo("Female Voice (en-GB)", ref selectedFemaleIndex, _femaleVoices.ToArray(), _femaleVoices.Count))
-            {
-                _configuration.SelectedFemaleVoice = _femaleVoices[selectedFemaleIndex];
-                _configuration.Save();
-            }
-            
-            if (!_maleVoices.Any() && !_femaleVoices.Any())
+            if (_voiceCatalog.IsEmpty)
             {
                 ImGui.TextColored(new System.Numerics.Vector4(1, 0, 0, 1), "No British English (en-GB) voices found!");
                 ImGui.Text("Please install them via Windows Language Settings.");
             }
 
-            ImGui.Spacing();
-            ImGui.Text("Audio Settings");
-            ImGui.Separator();
+            DrawSection("Audio Settings");
 
-            if (ImGui.SliderInt("Volume", ref _configuration.Volume, 0, 100))
+            DrawSlider("Volume", ref _configuration.Volume, 0, 100);
+            DrawSlider("Rate", ref _configuration.Rate, -10, 10);
+        }
+
+        private static void DrawSection(string title)
+        {
+            ImGui.Spacing();
+            ImGui.Text(title);
+            ImGui.Separator();
+        }
+
+        private void DrawVoiceSelector(VoiceGender gender)
+        {
+            var voices = _voiceCatalog.GetVoices(gender).ToArray();
+            var selectedIndex = Array.IndexOf(voices, _configuration.GetSelectedVoice(gender));
+
+            if (ImGui.Combo($"{gender} Voice (en-GB)", ref selectedIndex, voices, voices.Length))
             {
+                _configuration.SetSelectedVoice(gender, voices[selectedIndex]);
                 _configuration.Save();
             }
-            if (ImGui.SliderInt("Rate", ref _configuration.Rate, -10, 10))
+        }
+
+        private void DrawSlider(string label, ref int value, int min, int max)
+        {
+            if (ImGui.SliderInt(label, ref value, min, max))
             {
                 _configuration.Save();
             }
